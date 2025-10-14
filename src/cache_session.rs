@@ -130,8 +130,7 @@ impl<'session, M: FnMut(InboundMessage) + Send, E: FnMut(SessionEvent) + Send>
         let c_topic = CString::new(topic)?;
 
         let flags = if subscribe {
-            ffi::SOLCLIENT_CACHEREQUEST_FLAGS_LIVEDATA_FLOWTHRU
-                & ffi::SOLCLIENT_CACHEREQUEST_FLAGS_NO_SUBSCRIBE
+            ffi::SOLCLIENT_CACHEREQUEST_FLAGS_LIVEDATA_FULFILL
         } else {
             ffi::SOLCLIENT_CACHEREQUEST_FLAGS_LIVEDATA_FLOWTHRU
         };
