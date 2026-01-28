@@ -1,5 +1,6 @@
 extern crate bindgen;
-use std::{env, io::Write, path::PathBuf};
+
+use std::{env, io::Read, io::Write, path::PathBuf};
 
 #[cfg(target_os = "windows")]
 const SOLCLIENT_GZ_PATH: &str = "solclient_Win_vs2015_7.26.1.8.tar.gz";
@@ -42,6 +43,22 @@ fn download_and_unpack(url: &str, tarball_path: PathBuf, tarball_unpack_path: Pa
         })
         .filter_map(|e| e.ok())
         .for_each(|x| println!("> {}", x.display()));
+}
+
+/// Remove Solace-bundled OpenSSL (1.1) artifacts so they can’t shadow system OpenSSL (3)
+/// during linking. This prevents “random” OpenSSL symbol/link errors.
+fn remove_bundled_openssl(lib_dir: &PathBuf) {
+    for f in [
+        "libcrypto.a",
+        "libcrypto.so",
+        "libcrypto.so.1.1",
+        "libssl.a",
+        "libssl.so",
+        "libssl.so.1.1",
+        "README.openssl",
+    ] {
+        let _ = std::fs::remove_file(lib_dir.join(f));
+    }
 }
 
 fn main() {
@@ -88,10 +105,11 @@ fn main() {
         solclient_folder_path.join("lib")
     };
 
-    println!(
-        "cargo:rustc-link-search=native={}",
-        lib_dir.as_path().display()
-    );
+    // IMPORTANT: the Solace SDK tarball includes OpenSSL 1.1 (libcrypto/libssl) which can shadow
+    // system OpenSSL 3 at link time. Remove them so the rest of your app can link OpenSSL normally.
+    remove_bundled_openssl(&lib_dir);
+
+    println!("cargo:rustc-link-search=native={}", lib_dir.display());
 
     cfg_if::cfg_if! {
         if #[cfg(target_os = "macos")] {
@@ -99,8 +117,17 @@ fn main() {
         }
     }
 
-    println!("cargo:rustc-link-lib=static=crypto");
-    println!("cargo:rustc-link-lib=static=ssl");
+    // Keep Solace static for performance/deploy simplicity.
     println!("cargo:rustc-link-lib=static=solclient");
     println!("cargo:rustc-link-lib=static=solclientssl");
+
+    // Do NOT link Solace-bundled OpenSSL (1.1). Force system OpenSSL (3) dynamically so other
+    // crates can use OpenSSL safely without ABI/version conflicts.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        println!("cargo:rustc-link-arg=-Wl,-Bdynamic");
+        println!("cargo:rustc-link-arg=-Wl,-l:libssl.so.3");
+        println!("cargo:rustc-link-arg=-Wl,-l:libcrypto.so.3");
+        println!("cargo:rustc-link-arg=-Wl,-Bstatic");
+    }
 }
