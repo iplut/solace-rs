@@ -48,6 +48,14 @@ unsafe impl<M: FnMut(InboundMessage) + Send, E: FnMut(SessionEvent) + Send> Send
 impl<'session, M: FnMut(InboundMessage) + Send, E: FnMut(SessionEvent) + Send>
     Session<'session, M, E>
 {
+    /// Drive Solace event processing for poll-mode contexts.
+    ///
+    /// Returns `true` if an event was processed, `false` if no events were pending.
+    /// Only meaningful when the context was created with [`Context::new_poll_mode`].
+    pub fn process_events(&self) -> bool {
+        self.context.process_events()
+    }
+
     pub fn publish(&self, message: OutboundMessage) -> Result<()> {
         let send_message_raw_rc = unsafe {
             ffi::solClient_session_sendMsg(self._session_ptr, message.get_raw_message_ptr())

@@ -23,17 +23,22 @@ pub(super) struct RawContext {
 static SOLACE_GLOBAL_INIT: OnceLock<i32> = OnceLock::new();
 
 impl RawContext {
-    /// .
-    /// Raw solace context that wraps around the c context
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if .
+    /// Create a Solace context.
     ///
     /// # Safety
     /// Context initializes global variables so it is not safe to have multiple solace contexts.
-    /// .
     pub unsafe fn new(log_level: SolaceLogLevel) -> Result<Self> {
+        Self::new_with_thread(log_level, true)
+    }
+
+    /// Create a Solace context, optionally without a context thread.
+    ///
+    /// When `create_thread = false` the application must drive event processing
+    /// by calling [`RawContext::process_events`] from its own loop.
+    ///
+    /// # Safety
+    /// Context initializes global variables so it is not safe to have multiple solace contexts.
+    pub unsafe fn new_with_thread(log_level: SolaceLogLevel, create_thread: bool) -> Result<Self> {
         let rc = SOLACE_GLOBAL_INIT
             .get_or_init(|| ffi::solClient_initialize(log_level as u32, ptr::null_mut()));
 
@@ -53,16 +58,21 @@ impl RawContext {
                 },
             };
 
-        // enable context thread
-        let mut conext_props: [*const i8; 3] = [
+        let thread_val = if create_thread {
+            solace_rs_sys::SOLCLIENT_PROP_ENABLE_VAL.as_ptr() as *const i8
+        } else {
+            solace_rs_sys::SOLCLIENT_PROP_DISABLE_VAL.as_ptr() as *const i8
+        };
+
+        let mut context_props: [*const i8; 3] = [
             solace_rs_sys::SOLCLIENT_CONTEXT_PROP_CREATE_THREAD.as_ptr() as *const i8,
-            solace_rs_sys::SOLCLIENT_PROP_ENABLE_VAL.as_ptr() as *const i8,
+            thread_val,
             ptr::null(),
         ];
 
         let solace_context_raw_rc = unsafe {
             ffi::solClient_context_create(
-                conext_props.as_mut_ptr(),
+                context_props.as_mut_ptr(),
                 &mut ctx,
                 &mut context_func,
                 mem::size_of::<ffi::solClient_context_createRegisterFdFuncInfo>(),
@@ -76,6 +86,16 @@ impl RawContext {
             return Err(ContextError::InitializationFailed(rc, subcode));
         }
         Ok(Self { ctx })
+    }
+
+    /// Drive Solace event processing for poll-mode contexts.
+    ///
+    /// Returns `true` if an event was processed, `false` if no events were pending.
+    pub fn process_events(&mut self) -> bool {
+        let rc = unsafe { ffi::solClient_context_processEvents(self.ctx) };
+        let rc = SolClientReturnCode::from_raw(rc);
+        // SOLCLIENT_OK = event processed; SOLCLIENT_NOT_READY = no event
+        rc.is_ok()
     }
 }
 
@@ -107,10 +127,33 @@ pub struct Context {
 }
 
 impl Context {
+    /// Create a threaded Solace context (Solace manages its own event thread).
     pub fn new(log_level: SolaceLogLevel) -> std::result::Result<Self, ContextError> {
         Ok(Self {
             raw: Arc::new(Mutex::new(unsafe { RawContext::new(log_level) }?)),
         })
+    }
+
+    /// Create a poll-mode Solace context (no internal context thread).
+    ///
+    /// The caller must drive event processing by calling [`Context::process_events`]
+    /// from its own loop. This is used when a dedicated engine thread polls Solace
+    /// at a controlled rate (e.g., Phase C/E engine modes).
+    pub fn new_poll_mode(log_level: SolaceLogLevel) -> std::result::Result<Self, ContextError> {
+        Ok(Self {
+            raw: Arc::new(Mutex::new(unsafe {
+                RawContext::new_with_thread(log_level, false)
+            }?)),
+        })
+    }
+
+    /// Drive Solace event processing (poll-mode only).
+    ///
+    /// Returns `true` if an event was processed, `false` if no events were pending.
+    /// Must be called repeatedly from the application's poll loop when created via
+    /// [`Context::new_poll_mode`].
+    pub fn process_events(&self) -> bool {
+        self.raw.lock().expect("context lock").process_events()
     }
 
     pub fn session_builder<Host, Vpn, Username, Password, OnMessage, OnEvent>(
