@@ -155,4 +155,41 @@ impl<'session, M: FnMut(InboundMessage) + Send, E: FnMut(SessionEvent) + Send>
 
         Ok(())
     }
+
+    /// Blocking cache request that does NOT add a topic subscription
+    /// (`SOLCLIENT_CACHEREQUEST_FLAGS_NO_SUBSCRIBE`): the cached messages
+    /// for `topic` are delivered to the session's receive callback and the
+    /// call returns once the response is complete, leaving the session's
+    /// subscription set untouched. Use it to seed state from the cache when
+    /// live data for the topic arrives some other way.
+    pub fn blocking_cache_request_no_subscribe<T>(
+        &self,
+        topic: T,
+        request_id: u64,
+    ) -> Result<(), SessionError>
+    where
+        T: Into<Vec<u8>>,
+    {
+        let c_topic = CString::new(topic)?;
+
+        let rc = unsafe {
+            ffi::solClient_cacheSession_sendCacheRequest(
+                self._cache_session_pt,
+                c_topic.as_ptr(),
+                request_id,
+                None,
+                ptr::null_mut(),
+                ffi::SOLCLIENT_CACHEREQUEST_FLAGS_NO_SUBSCRIBE,
+                0,
+            )
+        };
+
+        let rc = SolClientReturnCode::from_raw(rc);
+        if !rc.is_ok() {
+            let subcode = get_last_error_info();
+            return Err(SessionError::CacheRequestFailure(rc, subcode));
+        }
+
+        Ok(())
+    }
 }
