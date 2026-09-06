@@ -155,4 +155,75 @@ impl<'session, M: FnMut(InboundMessage) + Send, E: FnMut(SessionEvent) + Send>
 
         Ok(())
     }
+
+    /// Blocking cache request that does NOT add a topic subscription
+    /// (`SOLCLIENT_CACHEREQUEST_FLAGS_NO_SUBSCRIBE`): the cached messages
+    /// for `topic` are delivered to the session's receive callback and the
+    /// call returns once the response is complete, leaving the session's
+    /// subscription set untouched. Use it to seed state from the cache when
+    /// live data for the topic arrives some other way.
+    ///
+    /// The API requires exactly one live-data action with the flags
+    /// (`Invalid live data action (0x00)` otherwise) and accepts only
+    /// `LIVEDATA_FLOWTHRU` for wildcard topics (`Only
+    /// SOLCLIENT_CACHEREQUEST_FLAGS_LIVEDATA_FLOWTHRU allowed with wildCard
+    /// topic`). With no subscription added there is no live data of our own
+    /// to flow through; a live message for the topic held by another
+    /// consumer on the session is delivered as it arrives, exactly as with
+    /// this crate's wildcard cached subscribe.
+    pub fn blocking_cache_request_no_subscribe<T>(
+        &self,
+        topic: T,
+        request_id: u64,
+    ) -> Result<CacheRequestOutcome, SessionError>
+    where
+        T: Into<Vec<u8>>,
+    {
+        let c_topic = CString::new(topic)?;
+
+        let rc = unsafe {
+            ffi::solClient_cacheSession_sendCacheRequest(
+                self._cache_session_pt,
+                c_topic.as_ptr(),
+                request_id,
+                None,
+                ptr::null_mut(),
+                ffi::SOLCLIENT_CACHEREQUEST_FLAGS_NO_SUBSCRIBE
+                    | ffi::SOLCLIENT_CACHEREQUEST_FLAGS_LIVEDATA_FLOWTHRU,
+                0,
+            )
+        };
+
+        let rc = SolClientReturnCode::from_raw(rc);
+        if rc.is_ok() {
+            return Ok(CacheRequestOutcome::Complete);
+        }
+        let subcode = get_last_error_info();
+        // SOLCLIENT_INCOMPLETE carries the cache's own verdict: the request
+        // ran to completion, and the subcode says whether messages came back.
+        if matches!(rc, SolClientReturnCode::Incomplete) {
+            match subcode.subcode {
+                ffi::solClient_subCode_SOLCLIENT_SUBCODE_CACHE_SUSPECT_DATA => {
+                    return Ok(CacheRequestOutcome::SuspectData)
+                }
+                ffi::solClient_subCode_SOLCLIENT_SUBCODE_CACHE_NO_DATA => {
+                    return Ok(CacheRequestOutcome::NoData)
+                }
+                _ => {}
+            }
+        }
+        Err(SessionError::CacheRequestFailure(rc, subcode))
+    }
+}
+
+/// What a completed cache request delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheRequestOutcome {
+    /// Cached messages were delivered and the cache vouches for them.
+    Complete,
+    /// Cached messages were delivered but the cache marks them suspect
+    /// (it may have missed live data at some point).
+    SuspectData,
+    /// The cache holds nothing for the topic; nothing was delivered.
+    NoData,
 }
