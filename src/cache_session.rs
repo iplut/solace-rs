@@ -175,7 +175,7 @@ impl<'session, M: FnMut(InboundMessage) + Send, E: FnMut(SessionEvent) + Send>
         &self,
         topic: T,
         request_id: u64,
-    ) -> Result<(), SessionError>
+    ) -> Result<CacheRequestOutcome, SessionError>
     where
         T: Into<Vec<u8>>,
     {
@@ -195,11 +195,35 @@ impl<'session, M: FnMut(InboundMessage) + Send, E: FnMut(SessionEvent) + Send>
         };
 
         let rc = SolClientReturnCode::from_raw(rc);
-        if !rc.is_ok() {
-            let subcode = get_last_error_info();
-            return Err(SessionError::CacheRequestFailure(rc, subcode));
+        if rc.is_ok() {
+            return Ok(CacheRequestOutcome::Complete);
         }
-
-        Ok(())
+        let subcode = get_last_error_info();
+        // SOLCLIENT_INCOMPLETE carries the cache's own verdict: the request
+        // ran to completion, and the subcode says whether messages came back.
+        if matches!(rc, SolClientReturnCode::Incomplete) {
+            match subcode.subcode {
+                ffi::solClient_subCode_SOLCLIENT_SUBCODE_CACHE_SUSPECT_DATA => {
+                    return Ok(CacheRequestOutcome::SuspectData)
+                }
+                ffi::solClient_subCode_SOLCLIENT_SUBCODE_CACHE_NO_DATA => {
+                    return Ok(CacheRequestOutcome::NoData)
+                }
+                _ => {}
+            }
+        }
+        Err(SessionError::CacheRequestFailure(rc, subcode))
     }
+}
+
+/// What a completed cache request delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheRequestOutcome {
+    /// Cached messages were delivered and the cache vouches for them.
+    Complete,
+    /// Cached messages were delivered but the cache marks them suspect
+    /// (it may have missed live data at some point).
+    SuspectData,
+    /// The cache holds nothing for the topic; nothing was delivered.
+    NoData,
 }
