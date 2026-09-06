@@ -162,6 +162,12 @@ impl<'session, M: FnMut(InboundMessage) + Send, E: FnMut(SessionEvent) + Send>
     /// call returns once the response is complete, leaving the session's
     /// subscription set untouched. Use it to seed state from the cache when
     /// live data for the topic arrives some other way.
+    ///
+    /// The API requires exactly one live-data action with the flags
+    /// (`Invalid live data action (0x00)` otherwise); `LIVEDATA_QUEUE`
+    /// delivers any live message that does arrive during the request after
+    /// the cached ones, so a consumer never sees a newer message overwritten
+    /// by an older cached one.
     pub fn blocking_cache_request_no_subscribe<T>(
         &self,
         topic: T,
@@ -179,7 +185,8 @@ impl<'session, M: FnMut(InboundMessage) + Send, E: FnMut(SessionEvent) + Send>
                 request_id,
                 None,
                 ptr::null_mut(),
-                ffi::SOLCLIENT_CACHEREQUEST_FLAGS_NO_SUBSCRIBE,
+                ffi::SOLCLIENT_CACHEREQUEST_FLAGS_NO_SUBSCRIBE
+                    | ffi::SOLCLIENT_CACHEREQUEST_FLAGS_LIVEDATA_QUEUE,
                 0,
             )
         };
